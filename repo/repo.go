@@ -133,6 +133,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// TODO: add HEAD and GET
 		switch r.Method {
 		case "POST":
+			err := validateAccess(r.Context(), "", r.Method)
+			if err != nil {
+				tlsauth.HttpCustomError(w, err)
+				return
+			}
 			h.createRepo(w, r)
 		default:
 			httpMethodNotAllowed(w, []string{"POST"})
@@ -147,6 +152,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "POST":
 			h.saveConfig(w, r)
 		case "DELETE":
+			err := validateAccess(r.Context(), "config", r.Method)
+			if err != nil {
+				tlsauth.HttpCustomError(w, err)
+				return
+			}
 			h.deleteConfig(w, r)
 		default:
 			httpMethodNotAllowed(w, []string{"HEAD", "GET", "POST", "DELETE"})
@@ -164,9 +174,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					httpMethodNotAllowed(w, []string{"GET"})
 				}
 			case "snapshots":
-				// return empty list for snapshots makes client happy
-				w.Header().Set("Content-Type", mimeTypeAPIV2)
-				_, _ = w.Write([]byte("[]"))
+				if err := validateAccess(r.Context(), "snapshots", r.Method); err == nil {
+					h.listBlobs(w, r)
+				} else {
+					// return empty list for snapshots makes client happy
+					w.Header().Set("Content-Type", mimeTypeAPIV2)
+					_, _ = w.Write([]byte("[]"))
+				}
 			default:
 				tlsauth.HttpCustomError(w, tlsauth.ErrReadOperationsBlocked)
 			}
@@ -178,10 +192,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "HEAD":
 			h.checkBlob(w, r)
 		case "GET":
+			// ensure access when reading
+			err := validateAccess(r.Context(), objectType, r.Method)
+			if err != nil {
+				tlsauth.HttpCustomError(w, err)
+				return
+			}
 			h.getBlob(w, r)
+
 		case "POST":
+			// allow saving always as it doesn't overwrite or delete files
 			h.saveBlob(w, r)
 		case "DELETE":
+			// ensure access when deleting
+			err := validateAccess(r.Context(), objectType, r.Method)
+			if err != nil {
+				tlsauth.HttpCustomError(w, err)
+				return
+			}
 			h.deleteBlob(w, r)
 		default:
 			httpMethodNotAllowed(w, []string{"HEAD", "GET", "POST", "DELETE"})
@@ -193,16 +221,38 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // validateAccess checks from userData whether read should be allowed.
-// It's always allowed to keys, locks and indexes as they do not contain actual file data.
-func validateAccess(objectType string, ctx context.Context) error {
-	switch objectType {
-	case "keys", "index", "locks":
-		return nil
-	case "snapshots", "data":
-		if tlsauth.GetUserData(ctx).ReadAllowed {
+// It's always allowed to keys, locks, config and indexes as they do not contain actual file data.
+func validateAccess(ctx context.Context, objectType string, method string) error {
+	switch method {
+	case "GET":
+		switch objectType {
+		case "keys", "index", "locks", "config":
+			return nil
+		case "snapshots", "data":
+			if tlsauth.GetUserData(ctx).ReadAllowed {
+				return nil
+			}
+		}
+	case "DELETE":
+		switch objectType {
+		case "locks":
 			return nil
 		}
+	case "POST":
+		switch objectType {
+		case "":
+			if tlsauth.GetUserData(ctx).ReadAllowed {
+				return nil
+			}
+		}
 	}
+
+	// TODO: commented out because we don't want (yet) allow delete anyhere
+	// else than locks. In future maybe allow delete and read separately
+	// if tlsauth.GetUserData(ctx).ReadAllowed {
+	// 	return nil
+	// }
+
 	return tlsauth.ErrReadOperationsBlocked
 }
 
@@ -461,12 +511,6 @@ func (h *Handler) listBlobsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := validateAccess(objectType, r.Context())
-	if err != nil {
-		tlsauth.HttpCustomError(w, err)
-		return
-	}
-
 	path := h.getSubPath(objectType)
 
 	items, err := ioutil.ReadDir(path)
@@ -545,12 +589,6 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 	if objectType == "" || objectID == "" {
 		h.internalServerError(w, fmt.Errorf(
 			"cannot determine object type or id: %s", r.URL.Path))
-		return
-	}
-
-	err := validateAccess(objectType, r.Context())
-	if err != nil {
-		tlsauth.HttpCustomError(w, err)
 		return
 	}
 
