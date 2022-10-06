@@ -1,4 +1,4 @@
-# Rest Server
+# Rest Server powered with mTLS auth
 
 
 [![Status badge for CI tests](https://github.com/restic/rest-server/workflows/test/badge.svg)](https://github.com/restic/rest-server/actions?query=workflow%3Atest)
@@ -14,6 +14,16 @@ Rest Server is a high performance HTTP server that implements restic's [REST bac
 Rest Server requires Go 1.15 or higher to build.  The only tested compiler is the official Go compiler.  Building server with `gccgo` may work, but is not supported.
 
 The required version of restic backup client to use with `rest-server` is [v0.7.1](https://github.com/restic/restic/releases/tag/v0.7.1) or higher.
+
+## Certificates
+
+TLS is needed to use certificate auth. To generate certificates run following commands in repo root:
+
+```
+go run $(go env GOROOT)/src/crypto/tls/generate_cert.go -ecdsa-curve P256 -host localhost
+mv key.pem private_key
+mv cert.pem public_key
+```
 
 ## Build
 

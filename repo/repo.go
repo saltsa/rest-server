@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ import (
 	"github.com/minio/sha256-simd"
 	"github.com/miolini/datacounter"
 	"github.com/restic/rest-server/quota"
+	"github.com/saltsa/tlsauth"
 )
 
 // Options are options for the Handler accepted by New
@@ -152,12 +154,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if objectType, objectID := h.getObject(urlPath); objectType != "" {
 		if objectID == "" {
-			// TODO: add HEAD
-			switch r.Method {
-			case "GET":
-				h.listBlobs(w, r)
+			switch objectType {
+			case "keys", "index", "locks":
+				// TODO: add HEAD
+				switch r.Method {
+				case "GET":
+					h.listBlobs(w, r)
+				default:
+					httpMethodNotAllowed(w, []string{"GET"})
+				}
+			case "snapshots":
+				// return empty list for snapshots makes client happy
+				w.Header().Set("Content-Type", mimeTypeAPIV2)
+				_, _ = w.Write([]byte("[]"))
 			default:
-				httpMethodNotAllowed(w, []string{"GET"})
+				tlsauth.HttpCustomError(w, tlsauth.ErrReadOperationsBlocked)
 			}
 
 			return
@@ -179,6 +190,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpDefaultError(w, http.StatusNotFound)
+}
+
+// validateAccess checks from userData whether read should be allowed.
+// It's always allowed to keys, locks and indexes as they do not contain actual file data.
+func validateAccess(objectType string, ctx context.Context) error {
+	switch objectType {
+	case "keys", "index", "locks":
+		return nil
+	case "snapshots", "data":
+		if tlsauth.GetUserData(ctx).ReadAllowed {
+			return nil
+		}
+	}
+	return tlsauth.ErrReadOperationsBlocked
 }
 
 // getObject parses the URL path and returns the objectType and objectID,
@@ -328,6 +353,10 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !tlsauth.GetUserData(r.Context()).ReadAllowed {
+		tlsauth.HttpCustomError(w, tlsauth.ErrWriteOperationsBlocked)
+	}
+
 	cfg := h.getSubPath("config")
 
 	if err := os.Remove(cfg); err != nil {
@@ -354,12 +383,8 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 		log.Println("listBlobs()")
 	}
 
-	switch r.Header.Get("Accept") {
-	case mimeTypeAPIV2:
-		h.listBlobsV2(w, r)
-	default:
-		h.listBlobsV1(w, r)
-	}
+	h.listBlobsV2(w, r)
+
 }
 
 // listBlobsV1 lists all blobs of a given type in an arbitrary order.
@@ -435,6 +460,13 @@ func (h *Handler) listBlobsV2(w http.ResponseWriter, r *http.Request) {
 			"cannot determine object type: %s", r.URL.Path))
 		return
 	}
+
+	err := validateAccess(objectType, r.Context())
+	if err != nil {
+		tlsauth.HttpCustomError(w, err)
+		return
+	}
+
 	path := h.getSubPath(objectType)
 
 	items, err := ioutil.ReadDir(path)
@@ -515,6 +547,13 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 			"cannot determine object type or id: %s", r.URL.Path))
 		return
 	}
+
+	err := validateAccess(objectType, r.Context())
+	if err != nil {
+		tlsauth.HttpCustomError(w, err)
+		return
+	}
+
 	path := h.getObjectPath(objectType, objectID)
 
 	file, err := os.Open(path)

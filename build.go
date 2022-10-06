@@ -56,7 +56,7 @@ import (
 var config = Config{
 	Name:       "rest-server",                                   // name of the program executable and directory
 	Namespace:  "github.com/restic/rest-server",                 // subdir of GOPATH, e.g. "github.com/foo/bar"
-	Main:       "github.com/restic/rest-server/cmd/rest-server", // package name for the main package
+	Main:       "github.com/restic/rest-server/cmd/secure-rest-server", // package name for the main package
 	Tests:      []string{"./..."},                               // tests to run
 	MinVersion: GoVersion{Major: 1, Minor: 15, Patch: 0},        // minimum Go version supported
 }

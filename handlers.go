@@ -10,6 +10,7 @@ import (
 
 	"github.com/restic/rest-server/quota"
 	"github.com/restic/rest-server/repo"
+	"github.com/saltsa/tlsauth"
 )
 
 // Server encapsulates the rest-server's settings and repo management logic
@@ -51,18 +52,19 @@ func httpDefaultError(w http.ResponseWriter, code int) {
 // authentication, etc) and then passes it on to repo.Handler for actual
 // REST API processing.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+
+	logger := tlsauth.GetRequestLogger(r.Context())
+	userData := tlsauth.GetUserData(r.Context())
+
 	// First of all, check auth (will always pass if NoAuth is set)
-	username, ok := s.checkAuth(r)
-	if !ok {
-		httpDefaultError(w, http.StatusUnauthorized)
-		return
-	}
+	username := userData.Username
+	folderPath := []string{tlsauth.GetUserData(r.Context()).Repopath}
 
 	// Perform the path parsing to determine the repo folder and remainder for the
 	// repo handler.
-	folderPath, remainder := splitURLPath(r.URL.Path, MaxFolderDepth)
+	_, remainder := splitURLPath(r.URL.Path, MaxFolderDepth)
 	if !folderPathValid(folderPath) {
-		log.Printf("Invalid request path: %s", r.URL.Path)
+		logger.Infof("Invalid request path: %s", r.URL.Path)
 		httpDefaultError(w, http.StatusNotFound)
 		return
 	}
@@ -79,7 +81,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fsPath, err := join(s.Path, folderPath...)
 	if err != nil {
 		// We did not expect an error at this stage, because we just checked the path
-		log.Printf("Unexpected join error for path %q", r.URL.Path)
+		logger.Errorf("Unexpected join error for path %q", r.URL.Path)
 		httpDefaultError(w, http.StatusNotFound)
 		return
 	}
@@ -155,7 +157,8 @@ func join(base string, names ...string) (string, error) {
 // splitURLPath splits the URL path into a folderPath of the subrepo, and
 // a remainder that can be passed to repo.Handler.
 // Example: /foo/bar/locks/0123... will be split into:
-//          ["foo", "bar"] and "/locks/0123..."
+//
+//	["foo", "bar"] and "/locks/0123..."
 func splitURLPath(urlPath string, maxDepth int) (folderPath []string, remainder string) {
 	if !strings.HasPrefix(urlPath, "/") {
 		// Really should start with "/"
